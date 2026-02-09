@@ -232,6 +232,9 @@ class RaceSelectionWindow(QMainWindow):
         if "--telemetry" in sys.argv:
             cmd += ["--telemetry"]
 
+        if "--timing" in sys.argv:
+            cmd += ["--timing"]
+
         # Show a modal loading dialog and load the session in a background thread.
         dlg = QProgressDialog("Loading session data...", None, 0, 0, self)
         dlg.setWindowTitle("Loading")

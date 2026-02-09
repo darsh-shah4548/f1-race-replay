@@ -102,6 +102,22 @@ class F1RaceReplayWindow(arcade.Window):
         else:
             print("Note: Session not provided, tyre degradation disabled")
 
+        # Pre-compute per-driver lap times for the timing dashboard broadcast.
+        # Keyed by (driver_code, lap_number) → lap time in seconds.
+        self._lap_time_lookup = {}
+        if session is not None:
+            try:
+                for _, lap_row in session.laps.iterrows():
+                    drv = lap_row.get("Driver", "")
+                    lap_num = lap_row.get("LapNumber", 0)
+                    lap_time = lap_row.get("LapTime")
+                    if drv and lap_num and lap_time is not None:
+                        try:
+                            self._lap_time_lookup[(drv, int(lap_num))] = lap_time.total_seconds()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         # Progress bar component with race event markers
         self.progress_bar_comp = RaceProgressBarComponent(
@@ -256,6 +272,16 @@ class F1RaceReplayWindow(arcade.Window):
         seconds = int(t % 60)
         time_str = f"{hours:02}:{minutes:02}:{seconds:02}"
         
+        # Per-driver last-completed lap time from session data (for timing dashboard)
+        driver_lap_times = {}
+        if current_frame and "drivers" in current_frame and self._lap_time_lookup:
+            for code, d in current_frame["drivers"].items():
+                drv_lap = int(round(d.get("lap", 0)))
+                if drv_lap > 1:
+                    lt = self._lap_time_lookup.get((code, drv_lap - 1))
+                    if lt is not None:
+                        driver_lap_times[code] = lt
+
         self.telemetry_stream.broadcast({
             "frame_index": int(self.frame_index),
             "frame": current_frame,
@@ -268,7 +294,8 @@ class F1RaceReplayWindow(arcade.Window):
                 "lap": leader_lap,
                 "leader": leader_code,
                 "total_laps": self.total_laps
-            }
+            },
+            "driver_lap_times": driver_lap_times
         })
 
     def _interpolate_points(self, xs, ys, interp_points=2000):

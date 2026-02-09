@@ -47,3 +47,17 @@ def launch_telemetry_viewer():
   
   viewer_thread = threading.Thread(target=start_viewer, daemon=True)
   viewer_thread.start()
+
+
+def launch_timing_dashboard():
+  """Launch the live timing dashboard in a separate process."""
+  def start_dashboard():
+    try:
+      # Give the main application a moment to start the telemetry server
+      time.sleep(3)
+      subprocess.run([sys.executable, "-m", "src.gui.timing_dashboard"], check=False)
+    except Exception as e:
+      print(f"Failed to launch timing dashboard: {e}")
+
+  dashboard_thread = threading.Thread(target=start_dashboard, daemon=True)
+  dashboard_thread.start()
