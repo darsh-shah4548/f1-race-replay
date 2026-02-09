@@ -119,6 +119,51 @@ class F1RaceReplayWindow(arcade.Window):
             except Exception:
                 pass
 
+        # Pre-compute per-driver sector times for the timing dashboard broadcast.
+        # Keyed by (driver_code, lap_number) -> [s1_seconds, s2_seconds, s3_seconds]
+        self._sector_time_lookup = {}
+        if session is not None:
+            try:
+                for _, lap_row in session.laps.iterrows():
+                    drv = lap_row.get("Driver", "")
+                    lap_num = lap_row.get("LapNumber", 0)
+                    if drv and lap_num:
+                        try:
+                            sectors = []
+                            for col in ("Sector1Time", "Sector2Time", "Sector3Time"):
+                                td = lap_row.get(col)
+                                val = None
+                                if td is not None:
+                                    try:
+                                        v = td.total_seconds()
+                                        if v == v:  # NaN check
+                                            val = v
+                                    except Exception:
+                                        pass
+                                sectors.append(val)
+                            self._sector_time_lookup[(drv, int(lap_num))] = sectors
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # Pre-compute grid positions for position change display.
+        self._grid_position_lookup = {}
+        if session is not None:
+            try:
+                for _, row in session.results.iterrows():
+                    drv = row.get("Abbreviation", "")
+                    grid = row.get("GridPosition", 0)
+                    if drv and grid:
+                        try:
+                            g = int(grid)
+                            if g > 0:
+                                self._grid_position_lookup[drv] = g
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
         # Progress bar component with race event markers
         self.progress_bar_comp = RaceProgressBarComponent(
             left_margin=left_ui_margin,
@@ -282,6 +327,49 @@ class F1RaceReplayWindow(arcade.Window):
                     if lt is not None:
                         driver_lap_times[code] = lt
 
+        # Per-driver sector times: previous lap (for display seeding / fast-forward)
+        # AND current lap (for progressive reveal as sectors are completed).
+        driver_sector_times = {}
+        if current_frame and "drivers" in current_frame and self._sector_time_lookup:
+            for code, d in current_frame["drivers"].items():
+                drv_lap = int(round(d.get("lap", 0)))
+                prev_sectors = None
+                curr_sectors = None
+                if drv_lap > 1:
+                    prev_sectors = self._sector_time_lookup.get((code, drv_lap - 1))
+                if drv_lap >= 1:
+                    curr_sectors = self._sector_time_lookup.get((code, drv_lap))
+                if prev_sectors is not None or curr_sectors is not None:
+                    driver_sector_times[code] = {
+                        "prev": prev_sectors,
+                        "current": curr_sectors,
+                    }
+
+        # Per-driver tyre health percentage (0-100)
+        driver_tyre_health = {}
+        if current_frame and "drivers" in current_frame:
+            for code, d in current_frame["drivers"].items():
+                # Try Bayesian model first
+                if self.degradation_integrator:
+                    try:
+                        health_data = self.degradation_integrator.get_health_for_frame(
+                            code, current_frame)
+                        if health_data and "health" in health_data:
+                            driver_tyre_health[code] = int(health_data["health"])
+                            continue
+                    except Exception:
+                        pass
+                # Fallback: simple tyre_life / max_tyre_life ratio
+                tyre_life = d.get("tyre_life", 0)
+                tyre_int = int(round(d.get("tyre", -1)))
+                max_life_map = getattr(self, "max_tyre_life", {})
+                max_life = max_life_map.get(tyre_int, 30) if isinstance(max_life_map, dict) else 30
+                if max_life > 0:
+                    health = max(0, min(100, int(100 * (1 - tyre_life / max_life))))
+                else:
+                    health = 100
+                driver_tyre_health[code] = health
+
         self.telemetry_stream.broadcast({
             "frame_index": int(self.frame_index),
             "frame": current_frame,
@@ -295,7 +383,10 @@ class F1RaceReplayWindow(arcade.Window):
                 "leader": leader_code,
                 "total_laps": self.total_laps
             },
-            "driver_lap_times": driver_lap_times
+            "driver_lap_times": driver_lap_times,
+            "driver_sector_times": driver_sector_times,
+            "grid_positions": self._grid_position_lookup,
+            "driver_tyre_health": driver_tyre_health
         })
 
     def _interpolate_points(self, xs, ys, interp_points=2000):

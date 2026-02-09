@@ -92,19 +92,25 @@ FRAMES_BEFORE_OUT = 50
 
 # Column indices
 COL_POS = 0
-COL_TEAM = 1
-COL_DRIVER = 2
-COL_GAP = 3
-COL_INT = 4
-COL_LAST = 5
-COL_TYRE = 6
-COL_AGE = 7
-COL_SPEED = 8
-COL_DRS = 9
-COL_PIT = 10
+COL_CHANGE = 1
+COL_TEAM = 2
+COL_DRIVER = 3
+COL_GAP = 4
+COL_INT = 5
+COL_LAST = 6
+COL_S1 = 7
+COL_S2 = 8
+COL_S3 = 9
+COL_TYRE = 10
+COL_HEALTH = 11
+COL_AGE = 12
+COL_SPEED = 13
+COL_DRS = 14
+COL_PIT = 15
 
-COLUMN_HEADERS = ["P", "", "Driver", "Gap", "Int", "Last", "Tyre", "Age", "Spd", "DRS", "Pit"]
-COLUMN_WIDTHS = [30, 6, 55, 75, 75, 90, 40, 35, 50, 35, 30]
+COLUMN_HEADERS = ["P", "+/-", "", "Driver", "Gap", "Int", "Last", "S1", "S2", "S3",
+                   "Tyre", "Hlth", "Age", "Spd", "DRS", "Pit"]
+COLUMN_WIDTHS = [30, 35, 6, 55, 75, 75, 90, 65, 65, 65, 40, 40, 35, 50, 35, 30]
 
 def _mono_font(size: int, bold: bool = False) -> QFont:
     """Create a cross-platform monospace font.
@@ -173,9 +179,26 @@ class DriverState:
         self.lap_start_time = None       # elapsed seconds when current lap started
         self.prev_lap_start_time = None  # elapsed seconds when previous lap started
 
+        # Sector times (seconds) — most recently completed value for each
+        self.last_s1 = None
+        self.last_s2 = None
+        self.last_s3 = None
+        self.best_s1 = None
+        self.best_s2 = None
+        self.best_s3 = None
+
+        # Live sector tracking — pending sectors for current in-progress lap
+        self._pending_sectors = None           # [s1, s2, s3] durations
+        self._pending_lap_num = 0              # which lap the pending data is for
+        self._sector_revealed = [False, False, False]
+
+        # Grid / position change
+        self.grid_position = None        # starting grid position (from session data)
+
         # Tyre / pit tracking
         self.last_tyre_compound = None   # int compound id
         self.pit_stop_count = 0
+        self.tyre_health = None          # 0-100 percentage from broadcast
 
         # Status flags
         self.is_in_pit = False
@@ -250,8 +273,8 @@ class TimingDashboard(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("F1 Race Replay – Live Timing")
-        self.setGeometry(100, 100, 900, 750)
-        self.setMinimumSize(700, 400)
+        self.setGeometry(100, 100, 1150, 750)
+        self.setMinimumSize(900, 400)
 
         # Telemetry client (reuses existing infrastructure)
         self.client = TelemetryStreamClient()
@@ -264,6 +287,9 @@ class TimingDashboard(QMainWindow):
         self.message_count = 0
         self._latest_data = None          # most recent frame payload
         self._overall_best_lap = None     # float seconds
+        self._overall_best_s1 = None      # float seconds
+        self._overall_best_s2 = None      # float seconds
+        self._overall_best_s3 = None      # float seconds
         self._estimated_track_length = DEFAULT_TRACK_LENGTH
 
         # Build UI
@@ -414,6 +440,52 @@ class TimingDashboard(QMainWindow):
                 if st.best_lap_time is None or lt < st.best_lap_time:
                     st.best_lap_time = lt
 
+        # Process sector times from broadcast (prev + current for progressive reveal)
+        drivers_in_frame = frame.get("drivers", {}) if frame else {}
+        for code, sector_info in data.get("driver_sector_times", {}).items():
+            st = self.driver_states.get(code)
+            if st is None:
+                continue
+
+            # Previous lap sectors — seed as displayed values & update bests
+            # (handles fast-forward: immediately shows last-completed-lap sectors)
+            prev = sector_info.get("prev") if isinstance(sector_info, dict) else None
+            if prev and len(prev) >= 3:
+                for val, attr_last, attr_best in (
+                    (prev[0], "last_s1", "best_s1"),
+                    (prev[1], "last_s2", "best_s2"),
+                    (prev[2], "last_s3", "best_s3"),
+                ):
+                    if val is not None:
+                        setattr(st, attr_last, val)
+                        best = getattr(st, attr_best)
+                        if best is None or val < best:
+                            setattr(st, attr_best, val)
+
+            # Current lap sectors — store as pending for progressive reveal
+            curr = sector_info.get("current") if isinstance(sector_info, dict) else None
+            if curr and len(curr) >= 3:
+                drv_lap = int(round(drivers_in_frame.get(code, {}).get("lap", 0)))
+                if drv_lap > 0 and drv_lap != st._pending_lap_num:
+                    st._pending_sectors = list(curr)
+                    st._pending_lap_num = drv_lap
+                    st._sector_revealed = [False, False, False]
+
+        # Seed grid positions (static – only set once per driver)
+        for code, gp in data.get("grid_positions", {}).items():
+            st = self.driver_states.get(code)
+            if st is not None and st.grid_position is None:
+                try:
+                    st.grid_position = int(gp)
+                except (TypeError, ValueError):
+                    pass
+
+        # Seed tyre health from broadcast
+        for code, health in data.get("driver_tyre_health", {}).items():
+            st = self.driver_states.get(code)
+            if st is not None:
+                st.tyre_health = health
+
     def _on_connection_status(self, status: str):
         self.connection_label.setText(f"Status: {status}")
         if status == "Connected":
@@ -474,10 +546,47 @@ class TimingDashboard(QMainWindow):
             st = self.driver_states[code]
             st.last_seen_frame = frame_index
 
-            # Lap detection
+            # Lap detection — check for transition before update_lap modifies state
             new_lap = int(round(d.get("lap", 0)))
+            was_lap_transition = new_lap > st.current_lap and st.current_lap > 0
             st.update_lap(new_lap, elapsed,
                           dist=d.get("dist", 0.0), speed=d.get("speed", 0.0))
+
+            # On lap transition, reveal S3 for the just-completed lap
+            if was_lap_transition and st._pending_sectors:
+                s3 = st._pending_sectors[2]
+                if s3 is not None and not st._sector_revealed[2]:
+                    st.last_s3 = s3
+                    st._sector_revealed[2] = True
+                    if st.best_s3 is None or s3 < st.best_s3:
+                        st.best_s3 = s3
+                # Reset for the new lap (pending sectors loaded next frame)
+                st._pending_sectors = None
+                st._pending_lap_num = 0
+                st._sector_revealed = [False, False, False]
+
+            # Progressive sector reveal: check time-in-lap vs sector durations
+            if (st._pending_sectors and st._pending_lap_num == new_lap
+                    and st.lap_start_time is not None):
+                time_in_lap = elapsed - st.lap_start_time
+                s1_dur, s2_dur, _ = st._pending_sectors
+
+                # Reveal S1 when driver has spent longer than S1 duration in lap
+                if (not st._sector_revealed[0] and s1_dur is not None
+                        and time_in_lap >= s1_dur):
+                    st.last_s1 = s1_dur
+                    st._sector_revealed[0] = True
+                    if st.best_s1 is None or s1_dur < st.best_s1:
+                        st.best_s1 = s1_dur
+
+                # Reveal S2 when time-in-lap exceeds S1 + S2 cumulative
+                if (not st._sector_revealed[1] and s1_dur is not None
+                        and s2_dur is not None
+                        and time_in_lap >= s1_dur + s2_dur):
+                    st.last_s2 = s2_dur
+                    st._sector_revealed[1] = True
+                    if st.best_s2 is None or s2_dur < st.best_s2:
+                        st.best_s2 = s2_dur
 
             # Tyre / pit
             compound = int(round(d.get("tyre", -1)))
@@ -611,12 +720,24 @@ class TimingDashboard(QMainWindow):
         if self.table.rowCount() != row_count:
             self.table.setRowCount(row_count)
 
-        # Track overall best lap
+        # Track overall bests (lap and sectors)
         self._overall_best_lap = None
+        self._overall_best_s1 = None
+        self._overall_best_s2 = None
+        self._overall_best_s3 = None
         for st in self.driver_states.values():
             if st.best_lap_time is not None:
                 if self._overall_best_lap is None or st.best_lap_time < self._overall_best_lap:
                     self._overall_best_lap = st.best_lap_time
+            if st.best_s1 is not None:
+                if self._overall_best_s1 is None or st.best_s1 < self._overall_best_s1:
+                    self._overall_best_s1 = st.best_s1
+            if st.best_s2 is not None:
+                if self._overall_best_s2 is None or st.best_s2 < self._overall_best_s2:
+                    self._overall_best_s2 = st.best_s2
+            if st.best_s3 is not None:
+                if self._overall_best_s3 is None or st.best_s3 < self._overall_best_s3:
+                    self._overall_best_s3 = st.best_s3
 
         white = QBrush(QColor("#e0e0e0"))
         dim = QBrush(QColor("#666666"))
@@ -629,6 +750,12 @@ class TimingDashboard(QMainWindow):
 
             # Position
             self._set_cell(row, COL_POS, str(entry["position"]), brush=text_brush,
+                           align=Qt.AlignCenter)
+
+            # Position change vs grid
+            change_text, change_brush = self._position_change_display(
+                st, entry["position"], is_out)
+            self._set_cell(row, COL_CHANGE, change_text, brush=change_brush,
                            align=Qt.AlignCenter)
 
             # Team colour bar (thin coloured cell)
@@ -653,11 +780,27 @@ class TimingDashboard(QMainWindow):
                            brush=lap_brush if not is_out else dim,
                            align=Qt.AlignRight | Qt.AlignVCenter)
 
+            # Sector times (S1, S2, S3)
+            for col, attr_last, attr_best, overall_best in (
+                (COL_S1, "last_s1", "best_s1", self._overall_best_s1),
+                (COL_S2, "last_s2", "best_s2", self._overall_best_s2),
+                (COL_S3, "last_s3", "best_s3", self._overall_best_s3),
+            ):
+                s_text, s_brush = self._sector_time_display(
+                    st, attr_last, attr_best, overall_best, is_out)
+                self._set_cell(row, col, s_text, brush=s_brush,
+                               align=Qt.AlignRight | Qt.AlignVCenter)
+
             # Tyre compound
             tyre_int = entry.get("tyre", -1)
             tyre_colour, tyre_letter = TYRE_COLORS.get(tyre_int, ("#888888", "?"))
             self._set_cell(row, COL_TYRE, tyre_letter,
                            brush=QBrush(QColor(tyre_colour)) if not is_out else dim,
+                           align=Qt.AlignCenter)
+
+            # Tyre health percentage
+            health_text, health_brush = self._tyre_health_display(st, is_out)
+            self._set_cell(row, COL_HEALTH, health_text, brush=health_brush,
                            align=Qt.AlignCenter)
 
             # Tyre age
@@ -709,6 +852,66 @@ class TimingDashboard(QMainWindow):
         if st.best_lap_time is not None and abs(st.last_lap_time - st.best_lap_time) < 0.001:
             return (text, QBrush(QColor("#00E676")))   # green
         return (text, QBrush(QColor("#e0e0e0")))
+
+    def _sector_time_display(self, st, attr_last: str, attr_best: str,
+                             overall_best, is_out: bool) -> tuple[str, QBrush]:
+        """Return (text, colour brush) for a sector time column."""
+        dim = QBrush(QColor("#666666"))
+        white = QBrush(QColor("#e0e0e0"))
+
+        if st is None or is_out:
+            return ("--", dim)
+
+        last_val = getattr(st, attr_last, None)
+        if last_val is None:
+            return ("--", white)
+
+        text = self._format_sector_time(last_val)
+        best_val = getattr(st, attr_best, None)
+
+        # Purple: matches overall best for this sector
+        if overall_best is not None and abs(last_val - overall_best) < 0.001:
+            return (text, QBrush(QColor("#BB00FF")))
+        # Green: matches personal best
+        if best_val is not None and abs(last_val - best_val) < 0.001:
+            return (text, QBrush(QColor("#00E676")))
+        # Yellow: slower than personal best
+        return (text, QBrush(QColor("#FFD600")))
+
+    def _position_change_display(self, st, current_pos: int,
+                                 is_out: bool) -> tuple[str, QBrush]:
+        """Return (text, colour brush) for position change vs grid."""
+        dim = QBrush(QColor("#666666"))
+        white = QBrush(QColor("#e0e0e0"))
+
+        if st is None or st.grid_position is None or is_out:
+            return ("--", dim)
+
+        change = st.grid_position - current_pos  # positive = gained places
+        if change > 0:
+            return (f"\u25B2{change}", QBrush(QColor("#00E676")))   # green up arrow
+        if change < 0:
+            return (f"\u25BC{abs(change)}", QBrush(QColor("#FF1744")))  # red down arrow
+        return ("0", white)
+
+    def _tyre_health_display(self, st, is_out: bool) -> tuple[str, QBrush]:
+        """Return (text, colour brush) for tyre health percentage."""
+        dim = QBrush(QColor("#666666"))
+
+        if st is None or is_out or st.tyre_health is None:
+            return ("--", dim)
+
+        h = st.tyre_health
+        text = f"{h}%"
+
+        # Colour gradient: green > yellow > orange > red
+        if h >= 75:
+            return (text, QBrush(QColor("#00E676")))   # green
+        if h >= 50:
+            return (text, QBrush(QColor("#FFD600")))    # yellow
+        if h >= 25:
+            return (text, QBrush(QColor("#FF9100")))    # orange
+        return (text, QBrush(QColor("#FF1744")))        # red
 
     # ----------------------------------------------- header update
     # -----------------------------------------------
@@ -771,6 +974,16 @@ class TimingDashboard(QMainWindow):
         if mins > 0:
             return f"{mins}:{secs:06.3f}"
         return f"{secs:.3f}"
+
+    @staticmethod
+    def _format_sector_time(seconds: float) -> str:
+        if seconds is None or seconds <= 0:
+            return "--"
+        if seconds >= 60.0:
+            mins = int(seconds // 60)
+            secs = seconds % 60
+            return f"{mins}:{secs:04.1f}"
+        return f"{seconds:.1f}"
 
     # ------------------------------------------------- lifecycle
     # -------------------------------------------------
