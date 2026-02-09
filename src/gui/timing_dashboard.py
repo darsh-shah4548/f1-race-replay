@@ -106,6 +106,19 @@ COL_PIT = 10
 COLUMN_HEADERS = ["P", "", "Driver", "Gap", "Int", "Last", "Tyre", "Age", "Spd", "DRS", "Pit"]
 COLUMN_WIDTHS = [30, 6, 55, 75, 75, 90, 40, 35, 50, 35, 30]
 
+def _mono_font(size: int, bold: bool = False) -> QFont:
+    """Create a cross-platform monospace font.
+
+    Tries Consolas (Windows) first, then Menlo (macOS); Qt's StyleHint
+    guarantees a monospace fallback on any platform.
+    """
+    font = QFont("Consolas", size)
+    font.setStyleHint(QFont.Monospace)
+    if bold:
+        font.setBold(True)
+    return font
+
+
 DARK_STYLESHEET = """
     QMainWindow {
         background-color: #1a1a2e;
@@ -293,9 +306,8 @@ class TimingDashboard(QMainWindow):
         layout = QHBoxLayout(header)
         layout.setContentsMargins(16, 8, 16, 8)
 
-        mono = QFont("Consolas", 11)
-        mono_large = QFont("Consolas", 20)
-        mono_large.setBold(True)
+        mono = _mono_font(11)
+        mono_large = _mono_font(20, bold=True)
 
         # Left: session time
         left = QVBoxLayout()
@@ -313,7 +325,7 @@ class TimingDashboard(QMainWindow):
         # Centre: track status
         self.track_status_label = QLabel("GREEN FLAG")
         self.track_status_label.setAlignment(Qt.AlignCenter)
-        self.track_status_label.setFont(QFont("Consolas", 12, QFont.Bold))
+        self.track_status_label.setFont(_mono_font(12, bold=True))
         self.track_status_label.setFixedHeight(36)
         self.track_status_label.setMinimumWidth(180)
         self._set_track_status("GREEN")
@@ -330,7 +342,7 @@ class TimingDashboard(QMainWindow):
         right.addWidget(self.speed_label)
 
         self.state_label = QLabel("PLAYING")
-        self.state_label.setFont(QFont("Consolas", 11, QFont.Bold))
+        self.state_label.setFont(_mono_font(11, bold=True))
         self.state_label.setAlignment(Qt.AlignRight)
         right.addWidget(self.state_label)
         layout.addLayout(right)
@@ -359,7 +371,7 @@ class TimingDashboard(QMainWindow):
         table.setFocusPolicy(Qt.NoFocus)
 
         # Monospace for data readability
-        table.setFont(QFont("Consolas", 12))
+        table.setFont(_mono_font(12))
 
         return table
 

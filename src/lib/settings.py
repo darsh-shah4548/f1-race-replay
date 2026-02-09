@@ -16,6 +16,7 @@ class SettingsManager:
     DEFAULTS = {
         "cache_location": ".fastf1-cache",
         "computed_data_location": "computed_data",
+        "enable_timing_dashboard": False,
     }
 
     _instance: Optional["SettingsManager"] = None
@@ -120,6 +121,16 @@ class SettingsManager:
     def computed_data_location(self, value: str) -> None:
         """Set the computed data location."""
         self.set("computed_data_location", value)
+
+    @property
+    def enable_timing_dashboard(self) -> bool:
+        """Get whether the live timing dashboard is enabled."""
+        return bool(self.get("enable_timing_dashboard"))
+
+    @enable_timing_dashboard.setter
+    def enable_timing_dashboard(self, value: bool) -> None:
+        """Set whether the live timing dashboard is enabled."""
+        self.set("enable_timing_dashboard", value)
 
 
 # Global convenience function to get the settings instance

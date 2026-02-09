@@ -12,6 +12,7 @@ import tempfile
 import uuid
 from src.f1_data import get_race_weekends_by_year, load_session
 from src.gui.settings_dialog import SettingsDialog
+from src.lib.settings import get_settings
 
 
 # Worker thread to fetch schedule without blocking UI
@@ -232,7 +233,7 @@ class RaceSelectionWindow(QMainWindow):
         if "--telemetry" in sys.argv:
             cmd += ["--telemetry"]
 
-        if "--timing" in sys.argv:
+        if "--timing" in sys.argv or get_settings().enable_timing_dashboard:
             cmd += ["--timing"]
 
         # Show a modal loading dialog and load the session in a background thread.

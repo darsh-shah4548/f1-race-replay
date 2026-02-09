@@ -90,14 +90,14 @@ class F1RaceReplayWindow(arcade.Window):
                 init_success = self.degradation_integrator.initialize_from_session()
                 
                 if init_success:
-                    print("✓ Tyre degradation model initialized successfully")
+                    print("[OK] Tyre degradation model initialized successfully")
                     # Link integrator to driver info component
                     self.driver_info_comp.degradation_integrator = self.degradation_integrator
                 else:
-                    print("✗ Tyre degradation model initialization failed")
+                    print("[FAIL] Tyre degradation model initialization failed")
                     self.degradation_integrator = None
             except Exception as e:
-                print(f"✗ Tyre degradation initialization error: {e}")
+                print(f"[FAIL] Tyre degradation initialization error: {e}")
                 self.degradation_integrator = None
         else:
             print("Note: Session not provided, tyre degradation disabled")

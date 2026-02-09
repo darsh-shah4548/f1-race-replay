@@ -5,6 +5,7 @@ Provides UI for configuring application settings like cache location.
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -86,6 +87,24 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(cache_group)
 
+        # Playback Settings Group
+        playback_group = QGroupBox("Playback Settings")
+        playback_layout = QFormLayout()
+        playback_group.setLayout(playback_layout)
+
+        self.timing_dashboard_checkbox = QCheckBox("Enable Live Timing Dashboard")
+        playback_layout.addRow("", self.timing_dashboard_checkbox)
+
+        timing_help = QLabel(
+            "Opens a live timing tower alongside the race replay,\n"
+            "showing positions, gaps, lap times, tyre info, and more."
+        )
+        timing_help.setStyleSheet("color: gray; font-size: 11px;")
+        timing_help.setWordWrap(True)
+        playback_layout.addRow("", timing_help)
+
+        layout.addWidget(playback_group)
+
         # Spacer
         layout.addStretch()
 
@@ -107,6 +126,7 @@ class SettingsDialog(QDialog):
         """Load current settings values into the UI."""
         self.cache_path_edit.setText(self.settings.cache_location)
         self.computed_path_edit.setText(self.settings.computed_data_location)
+        self.timing_dashboard_checkbox.setChecked(self.settings.enable_timing_dashboard)
 
     def _browse_cache_location(self):
         """Open a folder browser for cache location."""
@@ -170,6 +190,7 @@ class SettingsDialog(QDialog):
         # Save settings
         self.settings.cache_location = cache_path
         self.settings.computed_data_location = computed_path
+        self.settings.enable_timing_dashboard = self.timing_dashboard_checkbox.isChecked()
         self.settings.save()
 
         QMessageBox.information(

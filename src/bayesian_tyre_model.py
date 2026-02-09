@@ -466,7 +466,7 @@ class BayesianTyreDegradationModel:
                 if mu_alpha is None or stint != prev_stint or condition_changed:
                     if condition_changed and self.config.debug_logging:
                         old_category = prev_condition_category
-                        print(f"  {driver}: Track transition {old_category}→{condition_category}, resetting pace")
+                        print(f"  {driver}: Track transition {old_category} -> {condition_category}, resetting pace")
                     
                     mu_alpha = tyre.reset_pace
                     var_alpha = proc_var
